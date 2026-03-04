@@ -160,8 +160,6 @@ void waitms (unsigned int ms)
 		for (k=0; k<4; k++) Timer3us(250);
 }
 
-#define VDD 4.777 // The measured value of VDD in volts
-
 void InitPinADC (unsigned char portno, unsigned char pinno)
 {
 	unsigned char mask;
@@ -192,15 +190,22 @@ void InitPinADC (unsigned char portno, unsigned char pinno)
 unsigned int ADC_at_Pin(unsigned char pin)
 {
 	ADC0MX = pin;   // Select input from pin
+
+	ADINT = 0;
+    ADBUSY = 1;     
+    while (!ADINT);
+
 	ADINT = 0;
 	ADBUSY = 1;     // Convert voltage at the pin
 	while (!ADINT); // Wait for conversion to complete
 	return (ADC0);
 }
 
+#define VDD 3.3 // The measured value of VDD in volts
+
 float Volts_at_Pin(unsigned char pin)
 {
-	 return ((ADC_at_Pin(pin)*VDD)/0b_0011_1111_1111_1111);
+	 return (((ADC_at_Pin(pin))*VDD)/0b_0011_1111_1111_1111);
 }
 
 unsigned int Get_ADC (void)
@@ -213,18 +218,24 @@ unsigned int Get_ADC (void)
 
 void main (void)
 {
-	float v_ref;
-	float v_test;
-	float v_ref_peak;
-	float v_test_peak;
+	float v_ref = 0;
+	float v_test = 0;
+	float v_ref_peak = 0;
+	float v_test_peak = 0;
+	float freq_ref = 0;
+	float freq_test = 0;
+	float phase_float = 0;
 
 	unsigned int half_period_ref = 0;
 	unsigned int overflow_count_ref = 0;
-	unsigned int period_ref;
+	unsigned int period_ref = 0;
 
 	unsigned int half_period_test = 0;
 	unsigned int overflow_count_test = 0;
-	unsigned int period_test;
+	unsigned int period_test = 0;
+
+	unsigned int phase = 0;
+	unsigned int phase_overflows = 0;
 
     waitms(500); // Give PuTTy a chance to start before sending
 	printf("\x1b[2J"); // Clear screen using ANSI escape sequence.
@@ -236,17 +247,13 @@ void main (void)
 	
 	InitPinADC(2, 3); // Configure P2.3 as analog input
 	InitPinADC(2, 4); // Configure P2.4 as analog input
+	InitPinADC(1, 4);
+	InitPinADC(0, 6);
     InitADC();
 	TIMER0_Init();
 
 	while(1)
 	{
-	    // Read 14-bit value from the pins configured as analog inputs
-		v_ref_peak = Volts_at_Pin(QFP32_MUX_P0_6);
-		v_test_peak = Volts_at_Pin(QFP32_MUX_P0_5);
-		printf("Referance Amplitude: %7u V | ", v_ref_peak);
-		printf("Test Amplitude: %7u V | ", v_test_peak);
-
 		// Start tracking the reference signal
 		ADC0MX=QFP32_MUX_P2_3;
 		ADINT = 0;
@@ -263,9 +270,10 @@ void main (void)
 		half_period_ref=TH0*256.0+TL0; // The 16-bit number [TH0-TL0]
 		// Time from the beginning of the sine wave to its peak
 		overflow_count_ref=65536-(half_period_ref/2);
-		period_ref = (half_period_ref * 2) * (12 / SYSCLK) * 1000;
-		printf("Reference Period: %7u ms | ", period_ref);
-		printf("Reference Frequency: %7u Hz | ", (1 / period_ref));
+		period_ref = (half_period_ref * 24000.0) / SYSCLK;
+		printf("Reference Period: %3u ms | ", period_ref);
+		freq_ref = 1000.0 / period_ref;
+		printf("Reference Frequency: %3.0f Hz | ", freq_ref);
 
 		// Start tracking the test signal
 		ADC0MX=QFP32_MUX_P2_4;
@@ -284,11 +292,70 @@ void main (void)
 		half_period_test=TH0*256.0+TL0; // The 16-bit number [TH0-TL0]
 		// Time from the beginning of the sine wave to its peak
 		overflow_count_test=65536-(half_period_test/2);
-		period_test = (half_period_test * 2) * (12 / SYSCLK) * 1000;
-		printf("Test Period: %7u ms | ", period_test);
-		printf("Test Frequency: %7u Hz | \r", (1 / period_test));
+		period_test = (half_period_test * 24000.0) / SYSCLK;
+		printf("Test Period: %3u ms | ", period_test);
+		freq_test = 1000.0 / period_test;
+		printf("Test Frequency: %3.0f Hz | ", freq_test);
 
-		waitms(500);
-		
+		waitms(100);
+
+		// Read 14-bit value from the pins configured as analog inputs
+		v_ref = Volts_at_Pin(QFP32_MUX_P0_6);
+		v_test = Volts_at_Pin(QFP32_MUX_P1_4);
+		v_ref_peak = v_ref + 0.272;
+		v_ref_peak *= 1.1;
+		v_test_peak = v_test + 0.279;
+		v_test_peak *= 1.1;
+
+		printf("Referance Amplitude: %3.2f V | ", v_ref_peak);
+		printf("Test Amplitude: %3.2f V\r\n", v_test_peak);
+
+		waitms(100);
+
+		// --- 1. Synchronize to the Flatline ---
+		// Wait for Reference to finish its positive wave
+		while (ADC_at_Pin(QFP32_MUX_P2_3) > NOISE_THRESHOLD_LOW); 
+		// Wait for Test to finish its positive wave
+		while (ADC_at_Pin(QFP32_MUX_P2_4) > NOISE_THRESHOLD_LOW); 
+
+		// Now BOTH signals are guaranteed to be parked in the 0V flatline.
+
+		// --- 2. The Race: Which signal rises first? ---
+		while (1) 
+		{
+			// Did Reference rise first?
+			if (ADC_at_Pin(QFP32_MUX_P2_3) > NOISE_THRESHOLD_HIGH) 
+			{
+				TL0 = 0; TH0 = 0; TR0 = 1; // Start timer
+				
+				// Wait strictly for Test to follow
+				while (ADC_at_Pin(QFP32_MUX_P2_4) <= NOISE_THRESHOLD_HIGH);
+				TR0 = 0; // Stop timer
+				
+				// Calculate Phase
+				phase = (TH0 * 256.0) + TL0;
+				phase_float = (phase / (half_period_ref * 2.0)) * 360.0;
+				
+				printf("Phase: Test LAGS Ref by %3.1f deg\r\n\n", phase_float);
+				break;
+			}
+			
+			// Did Test rise first?
+			if (ADC_at_Pin(QFP32_MUX_P2_4) > NOISE_THRESHOLD_HIGH) 
+			{
+				TL0 = 0; TH0 = 0; TR0 = 1; // Start timer
+				
+				// Wait strictly for Reference to follow
+				while (ADC_at_Pin(QFP32_MUX_P2_3) <= NOISE_THRESHOLD_HIGH);
+				TR0 = 0; // Stop timer
+				
+				// Calculate Phase
+				phase = (TH0 * 256.0) + TL0;
+				phase_float = (phase / (half_period_ref * 2.0)) * 360.0;
+				
+				printf("Phase: Test LEADS Ref by %3.1f deg\r\n\n", phase_float);
+				break;
+			}
+		}
 	 }  
 }	
