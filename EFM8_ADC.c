@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <EFM8LB1.h>
-//#include <EFM8_LCD_4bit.h>
+#include "EFM8_LCD_4bit.h"
 
 // ~C51~  
 
@@ -17,7 +17,7 @@
 #define NOISE_THRESHOLD_LOW 50
 #define NOISE_THRESHOLD_HIGH 2000
 
-
+char buff[17];
 
 char _c51_external_startup (void)
 {
@@ -133,34 +133,6 @@ void TIMER0_Init(void)
     TR0 = 0;              // Ensure Timer 0 is stopped
 }
 
-// Uses Timer3 to delay <us> micro-seconds. 
-void Timer3us(unsigned char us)
-{
-	unsigned char i;               // usec counter
-	
-	// The input for Timer 3 is selected as SYSCLK by setting T3ML (bit 6) of CKCON0:
-	CKCON0|=0b_0100_0000;
-	
-	TMR3RL = (-(SYSCLK)/1000000L); // Set Timer3 to overflow in 1us.
-	TMR3 = TMR3RL;                 // Initialize Timer3 for first overflow
-	
-	TMR3CN0 = 0x04;                 // Sart Timer3 and clear overflow flag
-	for (i = 0; i < us; i++)       // Count <us> overflows
-	{
-		while (!(TMR3CN0 & 0x80));  // Wait for overflow
-		TMR3CN0 &= ~(0x80);         // Clear overflow indicator
-	}
-	TMR3CN0 = 0 ;                   // Stop Timer3 and clear overflow flag
-}
-
-void waitms (unsigned int ms)
-{
-	unsigned int j;
-	unsigned char k;
-	for(j=0; j<ms; j++)
-		for (k=0; k<4; k++) Timer3us(250);
-}
-
 void InitPinADC (unsigned char portno, unsigned char pinno)
 {
 	unsigned char mask;
@@ -228,15 +200,12 @@ void main (void)
 	float phase_float = 0;
 
 	unsigned int half_period_ref = 0;
-	unsigned int overflow_count_ref = 0;
 	unsigned int period_ref = 0;
 
 	unsigned int half_period_test = 0;
-	unsigned int overflow_count_test = 0;
 	unsigned int period_test = 0;
 
 	unsigned int phase = 0;
-	unsigned int phase_overflows = 0;
 
 	waitms(500);
 	printf("\x1b[2J");
@@ -251,6 +220,7 @@ void main (void)
 	InitPinADC(1, 4);
 	InitPinADC(0, 6);
 	InitADC();
+	LCD_4BIT();
 	TIMER0_Init();
 
 	while(1)
@@ -268,7 +238,6 @@ void main (void)
 		while (Get_ADC() > NOISE_THRESHOLD_LOW);  // wait for falling LOW crossing
 		TR0=0;
 		half_period_ref=TH0*256.0+TL0;
-		overflow_count_ref=65536-(half_period_ref/2);
 		period_ref = (half_period_ref * 24000.0) / SYSCLK;
 		printf("Reference Period: %3u ms | ", period_ref);
 		freq_ref = 1000.0 / period_ref;
@@ -287,11 +256,12 @@ void main (void)
 		while (Get_ADC() > NOISE_THRESHOLD_LOW);  // wait for falling LOW crossing
 		TR0=0;
 		half_period_test=TH0*256.0+TL0;
-		overflow_count_test=65536-(half_period_test/2);
 		period_test = (half_period_test * 24000.0) / SYSCLK;
 		printf("Test Period: %3u ms | ", period_test);
 		freq_test = 1000.0 / period_test;
 		printf("Test Frequency: %3.0f Hz | ", freq_test);
+		sprintf(buff, "Frequency: %2.0f Hz", freq_ref);
+		LCDprint(buff, 0, 2, 1);
 
 		waitms(100);
 
@@ -304,6 +274,10 @@ void main (void)
 
 		printf("Referance Amplitude: %3.2f V | ", v_ref_peak);
 		printf("Test Amplitude: %3.2f V\r\n", v_test_peak);
+		sprintf(buff, "Ref Peak: %3.3f V", v_ref_peak);
+		LCDprint(buff, 0, 1, 1);
+		sprintf(buff, "Test Peak: %3.3f V", v_test_peak);
+		LCDprint(buff, 1, 1, 1);
 
 		waitms(100);
 
@@ -337,5 +311,9 @@ void main (void)
 				break;
 			}
 		}
+
+		sprintf(buff, "Test Phase: %4f", phase_float);
+		LCDprint(buff, 1, 2, 1);
+
 	}  
 } 
