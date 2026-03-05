@@ -199,13 +199,19 @@ void main (void)
 	float freq_test = 0;
 	float phase_float = 0;
 
-	unsigned int half_period_ref = 0;
-	unsigned int period_ref = 0;
+	float half_period_ref = 0;
+	float period_ref = 0;
 
-	unsigned int half_period_test = 0;
-	unsigned int period_test = 0;
+	float half_period_test = 0;
+	float period_test = 0;
+	unsigned int i;
+	unsigned int ref_sample;
+	unsigned int test_sample;
 
 	unsigned int phase = 0;
+
+	LED_green_pin = 1;
+	LED_red_pin = 1;
 
 	waitms(500);
 	printf("\x1b[2J");
@@ -238,10 +244,9 @@ void main (void)
 		while (Get_ADC() > NOISE_THRESHOLD_LOW);  // wait for falling LOW crossing
 		TR0=0;
 		half_period_ref=TH0*256.0+TL0;
-		period_ref = (half_period_ref * 24000.0) / SYSCLK;
-		printf("Reference Period: %3u ms | ", period_ref);
+		period_ref = ((float)half_period_ref * 24000.0) / (float)SYSCLK;
 		freq_ref = 1000.0 / period_ref;
-		printf("Reference Frequency: %3.0f Hz | ", freq_ref);
+		freq_ref *= (10.00000 / 11.00000);
 
 		// --- FIX 2: half_period_test now measured LOW->LOW to match phase measurement ---
 		ADC0MX=QFP32_MUX_P2_4;
@@ -256,10 +261,9 @@ void main (void)
 		while (Get_ADC() > NOISE_THRESHOLD_LOW);  // wait for falling LOW crossing
 		TR0=0;
 		half_period_test=TH0*256.0+TL0;
-		period_test = (half_period_test * 24000.0) / SYSCLK;
-		printf("Test Period: %3u ms | ", period_test);
+		period_test = ((float)half_period_test * 24000.0) / (float)SYSCLK;
 		freq_test = 1000.0 / period_test;
-		printf("Test Frequency: %3.0f Hz | ", freq_test);
+		freq_test *= (10.00000 / 11.000000);
 		sprintf(buff, "Frequency: %2.0f Hz", freq_ref);
 		LCDprint(buff, 0, 2, 1);
 
@@ -272,8 +276,6 @@ void main (void)
 		v_test_peak = v_test + 0.279;
 		v_test_peak *= 1.1;
 
-		printf("Referance Amplitude: %3.2f V | ", v_ref_peak);
-		printf("Test Amplitude: %3.2f V\r\n", v_test_peak);
 		sprintf(buff, "Ref Peak: %3.3f V", v_ref_peak);
 		LCDprint(buff, 0, 1, 1);
 		sprintf(buff, "Test Peak: %3.3f V", v_test_peak);
@@ -296,7 +298,6 @@ void main (void)
 				TR0 = 0;
 				phase = (TH0 * 256.0) + TL0;
 				phase_float = -((phase / (half_period_ref * 2.0)) * 360.0 * 9.0000 / 10.000); // test lags = negative
-				printf("Phase: %3.1f deg\r\n\n", phase_float);
 				break;
 			}
 
@@ -307,13 +308,35 @@ void main (void)
 				TR0 = 0;
 				phase = (TH0 * 256.0) + TL0;
 				phase_float = (phase / (half_period_ref * 2.0)) * 360.0 * 9.0000 / 10.000; // test leads = positive
-				printf("Phase: %3.1f deg\r\n\n", phase_float);
 				break;
 			}
 		}
 
-		sprintf(buff, "Test Phase: %4f", phase_float);
-		LCDprint(buff, 1, 2, 1);
+		printf("M:%3.1f,%f,%3.3f,%3.1f,%f,%3.3f,%3.1f\n",
+		freq_ref, period_ref, v_ref_peak,
+		freq_test, period_test, v_test_peak,
+		phase_float);
+
+		if (button_pin == 1) {
+			phase_float *= (2.000 * 3.1415 / 360.0000);
+			sprintf(buff, "Test Pha: %4.1f Rd", phase_float);
+			LCDprint(buff, 1, 2, 1);
+		}
+		else {
+			sprintf(buff, "Test Pha: %4.1f Dg", phase_float);
+			LCDprint(buff, 1, 2, 1);
+		}
+
+		if(phase_float >= 0) { LED_green_pin = 0; LED_red_pin = 1; }
+		else { LED_red_pin = 0; LED_green_pin = 1; }
+
+		// Stream oscilloscope samples to Python
+		for(i = 0; i < 256; i++)
+		{
+			ref_sample  = ADC_at_Pin(QFP32_MUX_P2_3);
+			test_sample = ADC_at_Pin(QFP32_MUX_P2_4);
+			printf("S:%u,%u\n", ref_sample, test_sample);
+		}
 
 	}  
 } 
