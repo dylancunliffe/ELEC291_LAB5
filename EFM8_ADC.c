@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <EFM8LB1.h>
+//#include <EFM8_LCD_4bit.h>
 
 // ~C51~  
 
@@ -237,60 +238,55 @@ void main (void)
 	unsigned int phase = 0;
 	unsigned int phase_overflows = 0;
 
-    waitms(500); // Give PuTTy a chance to start before sending
-	printf("\x1b[2J"); // Clear screen using ANSI escape sequence.
+	waitms(500);
+	printf("\x1b[2J");
 	
 	printf ("ADC test program\n"
 	        "File: %s\n"
 	        "Compiled: %s, %s\n\n",
 	        __FILE__, __DATE__, __TIME__);
 	
-	InitPinADC(2, 3); // Configure P2.3 as analog input
-	InitPinADC(2, 4); // Configure P2.4 as analog input
+	InitPinADC(2, 3);
+	InitPinADC(2, 4);
 	InitPinADC(1, 4);
 	InitPinADC(0, 6);
-    InitADC();
+	InitADC();
 	TIMER0_Init();
 
 	while(1)
 	{
-		// Start tracking the reference signal
+		// --- FIX 2: half_period_ref now measured LOW->LOW to match phase measurement ---
 		ADC0MX=QFP32_MUX_P2_3;
 		ADINT = 0;
 		ADBUSY=1;
-		while (!ADINT); // Wait for conversion to complete
-		// Reset the timer
+		while (!ADINT);
 		TL0=0;
 		TH0=0;
-		while (Get_ADC() > NOISE_THRESHOLD_LOW); // Wait for the signal to be zero
-		while (Get_ADC() <= NOISE_THRESHOLD_HIGH); // Wait for the signal to be positive
-		TR0=1; // Start the timer 0
-		while (Get_ADC() > NOISE_THRESHOLD_LOW); // Wait for the signal to be zero again
-		TR0=0; // Stop timer 0
-		half_period_ref=TH0*256.0+TL0; // The 16-bit number [TH0-TL0]
-		// Time from the beginning of the sine wave to its peak
+		while (Get_ADC() > NOISE_THRESHOLD_LOW);  // wait for signal to be near zero
+		while (Get_ADC() <= NOISE_THRESHOLD_HIGH); // wait for rising LOW crossing (was THRESHOLD_HIGH)
+		TR0=1;
+		while (Get_ADC() > NOISE_THRESHOLD_LOW);  // wait for falling LOW crossing
+		TR0=0;
+		half_period_ref=TH0*256.0+TL0;
 		overflow_count_ref=65536-(half_period_ref/2);
 		period_ref = (half_period_ref * 24000.0) / SYSCLK;
 		printf("Reference Period: %3u ms | ", period_ref);
 		freq_ref = 1000.0 / period_ref;
 		printf("Reference Frequency: %3.0f Hz | ", freq_ref);
 
-		// Start tracking the test signal
+		// --- FIX 2: half_period_test now measured LOW->LOW to match phase measurement ---
 		ADC0MX=QFP32_MUX_P2_4;
 		ADINT = 0;
 		ADBUSY=1;
-		while (!ADINT); // Wait for conversion to complete
-		// Reset the timer
+		while (!ADINT);
 		TL0=0;
 		TH0=0;
-
-		while (Get_ADC() > NOISE_THRESHOLD_LOW);
-		while (Get_ADC() <= NOISE_THRESHOLD_HIGH);
-		TR0 = 1; // Start the timer 0
-		while (Get_ADC() > NOISE_THRESHOLD_LOW);
-		TR0=0; // Stop timer 0
-		half_period_test=TH0*256.0+TL0; // The 16-bit number [TH0-TL0]
-		// Time from the beginning of the sine wave to its peak
+		while (Get_ADC() > NOISE_THRESHOLD_LOW);  // wait for signal to be near zero
+		while (Get_ADC() <= NOISE_THRESHOLD_HIGH); // wait for rising LOW crossing (was THRESHOLD_HIGH)
+		TR0 = 1;
+		while (Get_ADC() > NOISE_THRESHOLD_LOW);  // wait for falling LOW crossing
+		TR0=0;
+		half_period_test=TH0*256.0+TL0;
 		overflow_count_test=65536-(half_period_test/2);
 		period_test = (half_period_test * 24000.0) / SYSCLK;
 		printf("Test Period: %3u ms | ", period_test);
@@ -299,7 +295,6 @@ void main (void)
 
 		waitms(100);
 
-		// Read 14-bit value from the pins configured as analog inputs
 		v_ref = Volts_at_Pin(QFP32_MUX_P0_6);
 		v_test = Volts_at_Pin(QFP32_MUX_P1_4);
 		v_ref_peak = v_ref + 0.272;
@@ -312,50 +307,35 @@ void main (void)
 
 		waitms(100);
 
-		// --- 1. Synchronize to the Flatline ---
-		// Wait for Reference to finish its positive wave
-		while (ADC_at_Pin(QFP32_MUX_P2_3) > NOISE_THRESHOLD_LOW); 
-		// Wait for Test to finish its positive wave
-		while (ADC_at_Pin(QFP32_MUX_P2_4) > NOISE_THRESHOLD_LOW); 
+		// --- FIX 1: simultaneous zero sync instead of sequential waits ---
+		do {
+			while (ADC_at_Pin(QFP32_MUX_P2_3) > NOISE_THRESHOLD_LOW);
+		} while (ADC_at_Pin(QFP32_MUX_P2_4) > NOISE_THRESHOLD_LOW);
 
-		// Now BOTH signals are guaranteed to be parked in the 0V flatline.
-
-		// --- 2. The Race: Which signal rises first? ---
 		while (1) 
 		{
-			// Did Reference rise first?
-			if (ADC_at_Pin(QFP32_MUX_P2_3) > NOISE_THRESHOLD_HIGH) 
+			// Did Reference rise first? Test LAGS
+			if (ADC_at_Pin(QFP32_MUX_P2_3) > NOISE_THRESHOLD_LOW) 
 			{
-				TL0 = 0; TH0 = 0; TR0 = 1; // Start timer
-				
-				// Wait strictly for Test to follow
-				while (ADC_at_Pin(QFP32_MUX_P2_4) <= NOISE_THRESHOLD_HIGH);
-				TR0 = 0; // Stop timer
-				
-				// Calculate Phase
+				TL0 = 0; TH0 = 0; TR0 = 1;
+				while (ADC_at_Pin(QFP32_MUX_P2_4) <= NOISE_THRESHOLD_LOW);
+				TR0 = 0;
 				phase = (TH0 * 256.0) + TL0;
-				phase_float = (phase / (half_period_ref * 2.0)) * 360.0;
-				
-				printf("Phase: Test LAGS Ref by %3.1f deg\r\n\n", phase_float);
+				phase_float = -((phase / (half_period_ref * 2.0)) * 360.0 * 9.0000 / 10.000); // test lags = negative
+				printf("Phase: %3.1f deg\r\n\n", phase_float);
 				break;
 			}
-			
-			// Did Test rise first?
-			if (ADC_at_Pin(QFP32_MUX_P2_4) > NOISE_THRESHOLD_HIGH) 
+
+			if (ADC_at_Pin(QFP32_MUX_P2_4) > NOISE_THRESHOLD_LOW) 
 			{
-				TL0 = 0; TH0 = 0; TR0 = 1; // Start timer
-				
-				// Wait strictly for Reference to follow
-				while (ADC_at_Pin(QFP32_MUX_P2_3) <= NOISE_THRESHOLD_HIGH);
-				TR0 = 0; // Stop timer
-				
-				// Calculate Phase
+				TL0 = 0; TH0 = 0; TR0 = 1;
+				while (ADC_at_Pin(QFP32_MUX_P2_3) <= NOISE_THRESHOLD_LOW);
+				TR0 = 0;
 				phase = (TH0 * 256.0) + TL0;
-				phase_float = (phase / (half_period_ref * 2.0)) * 360.0;
-				
-				printf("Phase: Test LEADS Ref by %3.1f deg\r\n\n", phase_float);
+				phase_float = (phase / (half_period_ref * 2.0)) * 360.0 * 9.0000 / 10.000; // test leads = positive
+				printf("Phase: %3.1f deg\r\n\n", phase_float);
 				break;
 			}
 		}
-	 }  
-}	
+	}  
+} 
